@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-queue-worker
+  labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: worker }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      # Must exceed SHUTDOWN_TIMEOUT so the pool can drain and release leases
+      # before the kubelet sends SIGKILL. Leases of a killed worker are still
+      # recovered, but only after LEASE_DURATION.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: ghcr.io/matthew-klette/inference-queue:latest
+          command: ["/usr/local/bin/worker"]
+          ports:
+            - { name: ops, containerPort: 9090 }
+          envFrom:
+            - configMapRef: { name: inference-queue }
+            - secretRef: { name: inference-queue }
+          env:
+            - { name: METRICS_ADDR, value: ":9090" }
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            httpGet: { path: /healthz, port: ops }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: ops }
+            periodSeconds: 5

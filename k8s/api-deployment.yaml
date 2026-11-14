@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-queue-api
+  labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: api }
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: api }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      # SSE streams are closed on SIGTERM; give in-flight requests time to finish.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: ghcr.io/matthew-klette/inference-queue:latest
+          command: ["/usr/local/bin/api"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          envFrom:
+            - configMapRef: { name: inference-queue }
+            - secretRef: { name: inference-queue }
+          env:
+            - { name: HTTP_ADDR, value: ":8080" }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inference-queue-api
+  labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: api }
+spec:
+  selector: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: api }
+  ports:
+    - { name: http, port: 80, targetPort: http }

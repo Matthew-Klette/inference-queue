@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# secret.example.yaml is deliberately not listed: create the Secret yourself.
+resources:
+  - configmap.yaml
+  - api-deployment.yaml
+  - worker-deployment.yaml
+  - hpa.yaml
+  - pdb.yaml

@@ -1,0 +1,74 @@
+# Local stack: API, worker, Postgres, Redis, Prometheus.
+#   docker compose up --build
+# The API listens on :8080, Prometheus on :9091.
+x-env: &env
+  DATABASE_URL: postgres://iq:iq@postgres:5432/iq?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  BOOTSTRAP_ADMIN_KEY: ${BOOTSTRAP_ADMIN_KEY:-iq_dev_admin_key_change_me}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+  # The model backend defaults to the deterministic fake. To use a local
+  # llama.cpp or vLLM server instead:
+  #   MODEL_BACKEND=openai MODEL_BASE_URL=http://host.docker.internal:8081
+  MODEL_BACKEND: ${MODEL_BACKEND:-fake}
+  MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+  FAKE_LATENCY: ${FAKE_LATENCY:-50ms}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-8}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: iq
+      POSTGRES_PASSWORD: iq
+      POSTGRES_DB: iq
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iq -d iq"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    environment:
+      <<: *env
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: .
+    entrypoint: ["/usr/local/bin/worker"]
+    environment:
+      <<: *env
+      METRICS_ADDR: ":9090"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    stop_grace_period: 40s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on:
+      - api
+      - worker
+
+volumes:
+  pgdata:

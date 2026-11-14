@@ -1,0 +1,54 @@
+# Scales workers on queue depth per replica.
+#
+# The metric iq_queue_items{state="ready"} is exported by the service and
+# scraped by Prometheus. To expose it to the HPA you need a metrics adapter
+# such as prometheus-adapter, with a rule like the one at the bottom of this
+# file, which publishes it as the external metric "iq_queue_ready".
+#
+# The CPU metric is a fallback: the HPA acts on whichever metric asks for more
+# replicas, so the worker still scales on CPU if the adapter is not installed.
+# Workers spend most of their time waiting on the model backend, so CPU alone
+# is a poor signal for this service.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inference-queue-worker
+  labels: { app.kubernetes.io/name: inference-queue, app.kubernetes.io/component: worker }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inference-queue-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: External
+      external:
+        metric: { name: iq_queue_ready }
+        target:
+          type: AverageValue
+          averageValue: "200"   # ready items per worker replica
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }
+    scaleDown:
+      # Slow scale-down: each terminated worker drains, and queue depth is bursty.
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 60 }
+---
+# prometheus-adapter rule (goes in the adapter's ConfigMap, not applied here):
+#
+# externalRules:
+#   - seriesQuery: 'iq_queue_items{state="ready"}'
+#     name: { as: "iq_queue_ready" }
+#     metricsQuery: 'max(iq_queue_items{state="ready"})'
+#
+# max() rather than sum() because every API and worker replica reports the same
+# global queue depth.

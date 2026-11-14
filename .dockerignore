@@ -1,0 +1,5 @@
+.git
+bin
+docs
+k8s
+*.md
