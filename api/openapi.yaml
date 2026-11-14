@@ -1,0 +1,288 @@
+openapi: 3.0.3
+info:
+  title: inference-queue
+  version: 1.0.0
+  description: >
+    A small batch inference gateway. Clients submit a batch of prompts or an
+    eval dataset, workers call a model backend, and results are stored and
+    streamable. All /v1 routes need `Authorization: Bearer <api key>`.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearer: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": { description: The process is up }
+  /readyz:
+    get:
+      summary: Readiness probe, checks Postgres (and Redis when configured)
+      security: []
+      responses:
+        "200": { description: Ready }
+        "503": { description: A dependency is unreachable }
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200": { description: Prometheus text exposition format }
+  /openapi.yaml:
+    get:
+      summary: This document
+      security: []
+      responses:
+        "200": { description: The OpenAPI document }
+  /v1/batches:
+    post:
+      summary: Submit a batch (scope submit)
+      description: >
+        Send either `prompts` or `dataset`. With an `Idempotency-Key` header the
+        same key and body returns the original batch with 200; the same key with
+        a different body returns 409.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBatch" }
+      responses:
+        "202": { description: Batch accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Batch" } } } }
+        "200": { description: Idempotent replay of an earlier request, content: { application/json: { schema: { $ref: "#/components/schemas/Batch" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List batches (scope read)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200":
+          description: Batches visible to the key, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batches: { type: array, items: { $ref: "#/components/schemas/Batch" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/batches/{id}:
+    get:
+      summary: Get a batch with progress counters (scope read)
+      parameters:
+        - { $ref: "#/components/parameters/BatchId" }
+      responses:
+        "200": { description: The batch, content: { application/json: { schema: { $ref: "#/components/schemas/Batch" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/batches/{id}/events:
+    get:
+      summary: Stream batch progress as Server-Sent Events (scope read)
+      description: >
+        Emits `progress` events whenever the counters change and a final `done`
+        event when the batch completes, then closes.
+      parameters:
+        - { $ref: "#/components/parameters/BatchId" }
+      responses:
+        "200":
+          description: An event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/batches/{id}/results:
+    get:
+      summary: Stream finished items as NDJSON (scope read)
+      description: Items still queued or running are skipped. Resume with `after`.
+      parameters:
+        - { $ref: "#/components/parameters/BatchId" }
+        - { name: after, in: query, description: Only items with a larger index, schema: { type: integer, default: -1 } }
+        - { name: include_prompt, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: One JSON object per line
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/Result" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/batches/{id}/replay:
+    post:
+      summary: Move dead-lettered items back to the queue (scope admin)
+      parameters:
+        - { $ref: "#/components/parameters/BatchId" }
+      responses:
+        "200":
+          description: Number of items replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayed: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/keys:
+    post:
+      summary: Create an API key (scope admin)
+      description: The plaintext key is returned once and only its sha256 is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateKey" }
+      responses:
+        "201": { description: Key created, content: { application/json: { schema: { $ref: "#/components/schemas/NewKey" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List API keys without secrets (scope admin)
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys: { type: array, items: { $ref: "#/components/schemas/Key" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/keys/{id}:
+    delete:
+      summary: Revoke an API key (scope admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  parameters:
+    BatchId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    CreateBatch:
+      type: object
+      required: [model]
+      properties:
+        model: { type: string }
+        params: { type: object, additionalProperties: true, description: Sampling parameters passed to the backend }
+        prompts: { type: array, items: { type: string } }
+        dataset:
+          type: array
+          items:
+            type: object
+            required: [prompt]
+            properties:
+              ref: { type: string }
+              prompt: { type: string }
+              expected: { type: string, description: Scored by exact match after trimming }
+        webhook_url: { type: string, format: uri, description: Receives a signed batch.completed event }
+        max_attempts: { type: integer, minimum: 1, maximum: 20 }
+    Batch:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        model: { type: string }
+        params: { type: object }
+        status: { type: string, enum: [queued, running, completed, completed_with_errors] }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        pending: { type: integer }
+        scored: { type: integer }
+        matched: { type: integer }
+        eval:
+          type: object
+          properties:
+            scored: { type: integer }
+            matched: { type: integer }
+            exact_match: { type: number }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+    Result:
+      type: object
+      properties:
+        index: { type: integer }
+        ref: { type: string }
+        status: { type: string, enum: [succeeded, dead] }
+        prompt: { type: string }
+        output: { type: string }
+        expected: { type: string }
+        matched: { type: boolean }
+        cached: { type: boolean }
+        attempts: { type: integer }
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        latency_ms: { type: integer }
+        error: { type: string }
+    CreateKey:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        scopes: { type: array, items: { type: string, enum: [submit, read, admin] } }
+        rate_rps: { type: number }
+        rate_burst: { type: integer }
+    Key:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        scopes: { type: array, items: { type: string } }
+        rate_rps: { type: number }
+        rate_burst: { type: integer }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
+    NewKey:
+      allOf:
+        - $ref: "#/components/schemas/Key"
+        - type: object
+          properties:
+            key: { type: string, description: Plaintext key, shown once }
