@@ -76,7 +76,7 @@ export ADMIN=iq_dev_admin_key_change_me
 
 ### Without Docker
 
-You need a Postgres 14 or newer. Redis is optional.
+You need Postgres (tested on 16). Redis is optional.
 
 ```sh
 export DATABASE_URL='postgres://iq@127.0.0.1:5432/iq?sslmode=disable'
