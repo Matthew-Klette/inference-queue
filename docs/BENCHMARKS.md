@@ -78,11 +78,12 @@ queue wait stays small and the latencies show service time plus queueing noise.
 - With 4 and 16 workers the service reaches 96 and 92 percent of the ideal rate,
   so overhead is small when workers are the limit. The first few hundred
   milliseconds of each run include lease polling and the submission of the burst.
-- With 64 workers throughput is 62 percent of ideal. At that point the limit is
-  no longer model latency: it is the cost of leasing in small groups, one
-  transaction per completion that also updates the batch row (10 batches are in
-  flight, so completions contend), and everything sharing one laptop with
-  `fsync` on. DESIGN.md lists the counter contention as the first thing to fix
+- With 64 workers throughput is 62 percent of ideal. I did not profile this run,
+  so the cause is not established. Likely contributors: each completion is its
+  own transaction that also updates the batch row (10 batches were in flight, so
+  completions contend), leasing in groups sized by free slots, and the load
+  generator, API, workers and Postgres (with `fsync` on) all sharing one loaded
+  laptop. DESIGN.md lists the batch counter contention as the first thing to fix
   if this mattered.
 - Paced latency with the cache off is the 50 ms model time plus about 10 ms of
   queueing, claiming and commit.
